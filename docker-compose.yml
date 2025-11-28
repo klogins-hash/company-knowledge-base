@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # TEMPORAL - Workflow Orchestration
+  # ============================================
+
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    container_name: kb-temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=${SUPABASE_DB_PASSWORD}
+      - POSTGRES_SEEDS=supabase-db-sc4gsgcc08k8ws0sws8k4g8c
+      - POSTGRES_DB=temporal
+    ports:
+      - "7233:7233"
+    networks:
+      - kb-internal
+      - sc4gsgcc08k8ws0sws8k4g8c
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:2.24.0
+    container_name: kb-temporal-ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "8088:8080"
+    depends_on:
+      - temporal
+    networks:
+      - kb-internal
+    restart: unless-stopped
+
+  # ============================================
+  # UPLOAD API - Document Ingestion
+  # ============================================
+
+  upload-api:
+    build:
+      context: ./apps/upload-api
+      dockerfile: Dockerfile
+    container_name: kb-upload-api
+    environment:
+      # MinIO (Supabase)
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-supabase-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET:-company-knowledge}
+      - MINIO_SECURE=false
+
+      # Redis
+      - REDIS_HOST=root_redis_1
+      - REDIS_PORT=6379
+      - REDIS_DB=1
+
+      # PostgreSQL (Supabase)
+      - DATABASE_URL=postgresql://postgres:${SUPABASE_DB_PASSWORD}@supabase-db-sc4gsgcc08k8ws0sws8k4g8c:5432/postgres
+
+      # Temporal
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=document-processing
+
+      # API
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - MAX_UPLOAD_SIZE=10737418240
+      - CHUNK_SIZE=104857600
+
+      # AI/Embeddings
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - EMBEDDING_MODEL=text-embedding-3-small
+      - EMBEDDING_DIMENSIONS=1536
+    ports:
+      - "8900:8000"
+    volumes:
+      - ./apps/upload-api/src:/app/src
+      - ./logs:/app/logs
+    depends_on:
+      - temporal
+    networks:
+      - kb-internal
+      - sc4gsgcc08k8ws0sws8k4g8c
+      - root_coolify
+    restart: unless-stopped
+
+  # ============================================
+  # TEMPORAL WORKERS - Document Processing
+  # ============================================
+
+  workers:
+    build:
+      context: ./apps/workers
+      dockerfile: Dockerfile
+    container_name: kb-workers
+    environment:
+      # Same as upload-api
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-supabase-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET:-company-knowledge}
+      - MINIO_SECURE=false
+      - REDIS_HOST=root_redis_1
+      - REDIS_PORT=6379
+      - REDIS_DB=1
+      - DATABASE_URL=postgresql://postgres:${SUPABASE_DB_PASSWORD}@supabase-db-sc4gsgcc08k8ws0sws8k4g8c:5432/postgres
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=document-processing
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - EMBEDDING_MODEL=text-embedding-3-small
+      - EMBEDDING_DIMENSIONS=1536
+    volumes:
+      - ./apps/workers/src:/app/src
+      - ./logs:/app/logs
+    depends_on:
+      - temporal
+      - upload-api
+    networks:
+      - kb-internal
+      - sc4gsgcc08k8ws0sws8k4g8c
+      - root_coolify
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+networks:
+  kb-internal:
+    driver: bridge
+
+  # External networks (already exist on Hetzner)
+  sc4gsgcc08k8ws0sws8k4g8c:
+    external: true
+  root_coolify:
+    external: true
+
+# Notes:
+# - Uses existing Supabase PostgreSQL (no new database container)
+# - Uses existing Redis (root_redis_1)
+# - Uses existing MinIO (supabase-minio)
+# - Creates Temporal database in existing Supabase PostgreSQL instance
+# - Minimal footprint: only 4 new containers (temporal, temporal-ui, upload-api, workers x2)
