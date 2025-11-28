@@ -1,0 +1,35 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to Hetzner
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            cd /root/company-knowledge-base
+
+            # Pull latest code
+            git pull origin main
+
+            # Rebuild and restart services
+            docker-compose build
+            docker-compose up -d
+
+            # Show status
+            docker-compose ps
+
+            echo "✅ Deployment complete!"
